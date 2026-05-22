@@ -1,0 +1,79 @@
+# Akamai SIEM 日志采集器配置文件
+# 支持环境变量引用: ${ENV_VAR} 或 ${ENV_VAR:default_value}
+
+akamai:
+  base_url: "https://xxx.luna.akamaiapis.net"
+  client_token: "${AKAMAI_CLIENT_TOKEN:akab-xxx}"
+  client_secret: "${AKAMAI_CLIENT_SECRET:xxx}"
+  access_token: "${AKAMAI_ACCESS_TOKEN:xxx}"
+  configId: "xxx"
+  max_retries: 3
+  retry_delay: 5
+  api_timeout: 30
+
+logstash:
+  host: "127.0.0.1"
+  port: 5045
+  protocol: tcp
+  timeout: 10
+
+resume:
+  enabled: true
+  fallback_minutes: 30
+  redis:
+    host: "${REDIS_HOST:127.0.0.1}"
+    port: 6379
+    db: 0
+    password: "${REDIS_PASSWORD:}"
+    socket_timeout: 5
+  key_prefix: "akamai_siem:resume"
+  ttl: null
+
+service:
+  interval: 5
+  max_consecutive_failures: 10
+
+# 基本参数
+site: all
+mode: offset
+limit: 7000
+log_level: warning
+
+# 事件数据字段处理规则
+processing:
+  # 丢弃规则：匹配时整条事件被丢弃
+  drop_rules:
+    - field: httpMessage.status
+      values:
+        - 204
+        - "204"
+
+  # 字段转换：对指定字段依次执行操作链
+  field_transforms:
+    - field: httpMessage.requestHeaders
+      operations:
+        - type: url_decode
+        - type: replace
+          old: "\r\n"
+          new: " "
+        - type: replace
+          old: '"'
+          new: "'"
+
+    - field: httpMessage.responseHeaders
+      operations:
+        - type: url_decode
+        - type: replace
+          old: "\r\n"
+          new: " "
+        - type: replace
+          old: '"'
+          new: "'"
+
+  # attackData 解码配置
+  attack_data_decode:
+    enabled: true
+    source_field: attackData
+    target_field: attackRules
+    key_pattern: "^rule"
+    remove_decoded_keys: true
