@@ -132,7 +132,11 @@ def process_logs(logs: List[Dict], config: Dict) -> List[Dict]:
     :param config: 完整配置（从中读取 processing 段）
     :return: 处理后的日志列表（已过滤丢弃的事件）
     """
-    processing_config = config.get("processing", DEFAULT_PROCESSING_RULES)
+    processing_config = config.get("processing", {})
+
+    # 如果未配置 processing，不做任何字段处理，直接返回原始日志
+    if not processing_config:
+        return list(logs)
 
     # 创建预编译上下文（一次性开销）
     ctx = _ProcessingContext(processing_config)
