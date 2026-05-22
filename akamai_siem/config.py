@@ -65,18 +65,19 @@ def validate_config(config: Dict) -> None:
         if field not in akamai_config or not akamai_config[field]:
             raise ValueError(f"Akamai配置缺少必要参数: {field}")
 
-    # 验证Logstash配置
-    if "logstash" not in config:
-        raise ValueError("配置文件缺少 'logstash' 部分")
+    # 验证Logstash配置（stdout 模式下不需要）
+    if not config.get("output_stdout", False):
+        if "logstash" not in config:
+            raise ValueError("配置文件缺少 'logstash' 部分")
 
-    logstash_config = config["logstash"]
-    required_logstash_fields = ["host", "port", "protocol"]
-    for field in required_logstash_fields:
-        if field not in logstash_config:
-            raise ValueError(f"Logstash配置缺少必要参数: {field}")
+        logstash_config = config["logstash"]
+        required_logstash_fields = ["host", "port", "protocol"]
+        for field in required_logstash_fields:
+            if field not in logstash_config:
+                raise ValueError(f"Logstash配置缺少必要参数: {field}")
 
-    if logstash_config["protocol"] not in ["tcp", "udp"]:
-        raise ValueError(f"无效的Logstash协议: {logstash_config['protocol']}")
+        if logstash_config["protocol"] not in ["tcp", "udp"]:
+            raise ValueError(f"无效的Logstash协议: {logstash_config['protocol']}")
 
     # 验证拉取模式参数
     if config["mode"] == "offset":
@@ -228,6 +229,8 @@ def get_config() -> Dict:
                         help="以服务模式运行")
     parser.add_argument("--once", action="store_true",
                         help="只运行一次")
+    parser.add_argument("--stdout", action="store_true",
+                        help="单次运行模式下将事件输出到标准输出，不发送到Logstash")
 
     args = parser.parse_args()
 
@@ -266,6 +269,18 @@ def get_config() -> Dict:
         config["run_mode"] = "service"
     elif args.once:
         config["run_mode"] = "once"
+
+    # stdout 输出模式
+    if args.stdout:
+        config["output_stdout"] = True
+
+    # 语义一致性检查：提示用户可能的参数矛盾
+    if config["mode"] == "offset" and ("from_time" in config or "to_time" in config):
+        if args.from_time is not None or args.to_time is not None:
+            logger.warning("当前为offset模式，--from-time/--to-time 参数将被忽略。如需使用时间范围，请指定 --mode time-based")
+    if config["mode"] == "time-based" and "offset" in config:
+        if args.offset is not None:
+            logger.warning("当前为time-based模式，--offset 参数将被忽略。如需使用偏移量，请指定 --mode offset")
 
     # 4. 验证配置
     validate_config(config)

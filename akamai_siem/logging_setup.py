@@ -21,10 +21,12 @@ LOG_LEVELS = {
 logger = logging.getLogger("akamai_siem")
 
 
-def setup_logging(log_level: str, log_file: Optional[str] = None) -> None:
+def setup_logging(log_level: str, log_file: Optional[str] = None, stderr: bool = False) -> None:
     """设置日志系统
 
-    所有日志统一输出到 stdout。log_file 参数保留兼容性但不再使用。
+    :param log_level: 日志级别
+    :param log_file: 保留兼容性，不再使用
+    :param stderr: 是否输出到 stderr（stdout 模式下使用，避免与数据输出混淆）
     """
     # 清除可能存在的旧处理器
     if logger.handlers:
@@ -33,8 +35,9 @@ def setup_logging(log_level: str, log_file: Optional[str] = None) -> None:
     level = LOG_LEVELS.get(log_level.lower(), logging.INFO)
     logger.setLevel(level)
 
-    # 输出到 stdout
-    handler = logging.StreamHandler(sys.stdout)
+    # 选择输出流
+    stream = sys.stderr if stderr else sys.stdout
+    handler = logging.StreamHandler(stream)
     handler.setLevel(level)
 
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')

@@ -40,31 +40,36 @@ def _signal_handler(signum, frame):
     logger.info(f"收到信号 {signum}，准备优雅退出...")
 
 
+def _apply_resume_fallback(config: Dict) -> None:
+    """加载断点续传信息并应用到配置中
+
+    如果断点不存在且未显式指定范围参数，自动切换为 time-based 模式。
+    """
+    resume_data = load_resume_point(config)
+
+    if resume_data:
+        if config["mode"] == "offset":
+            if "offset" in resume_data and "offset" not in config:
+                config["offset"] = resume_data["offset"]
+        else:
+            if "from_time" in resume_data and "from_time" not in config:
+                config["from_time"] = resume_data["from_time"]
+    else:
+        if "offset" not in config and "from_time" not in config:
+            fallback_minutes = config.get("resume", {}).get("fallback_minutes", 30)
+            from_time = datetime.now(timezone.utc) - timedelta(minutes=fallback_minutes)
+            config["mode"] = "time-based"
+            config["from_time"] = from_time.timestamp()
+            logger.info(
+                f"断点信息不存在，自动切换为time-based模式，"
+                f"从 {fallback_minutes} 分钟前开始拉取 (from_time={config['from_time']})"
+            )
+
+
 def process_logs(config: Dict, should_save_resume: bool = True) -> bool:
     """处理日志的主函数"""
     try:
-        # 加载断点续传信息
-        resume_data = load_resume_point(config)
-
-        # 如果有断点续传信息，且命令行没有显式指定参数，使用断点续传信息
-        if resume_data:
-            if config["mode"] == "offset":
-                if "offset" in resume_data and "offset" not in config:
-                    config["offset"] = resume_data["offset"]
-            else:
-                if "from_time" in resume_data and "from_time" not in config:
-                    config["from_time"] = resume_data["from_time"]
-        else:
-            # 断点信息不存在，自动切换为 time-based 模式，从30分钟前开始
-            if "offset" not in config and "from_time" not in config:
-                fallback_minutes = config.get("resume", {}).get("fallback_minutes", 30)
-                from_time = datetime.now(timezone.utc) - timedelta(minutes=fallback_minutes)
-                config["mode"] = "time-based"
-                config["from_time"] = from_time.timestamp()
-                logger.info(
-                    f"断点信息不存在，自动切换为time-based模式，"
-                    f"从 {fallback_minutes} 分钟前开始拉取 (from_time={config['from_time']})"
-                )
+        _apply_resume_fallback(config)
 
         # 拉取日志
         result = fetch_siem_events(config)
@@ -135,25 +140,6 @@ def process_logs(config: Dict, should_save_resume: bool = True) -> bool:
         return False
 
 
-def ask_user_to_save_resume() -> bool:
-    """询问用户是否保存断点续传信息"""
-    try:
-        while True:
-            response = input("是否将本次运行的状态覆盖至断点续传文件中？(y/n): ").strip().lower()
-            if response == 'y':
-                return True
-            elif response == 'n':
-                return False
-            else:
-                print("请输入 'y' 或 'n'")
-    except EOFError:
-        logger.info("非交互式环境，默认不保存断点续传信息")
-        return False
-    except KeyboardInterrupt:
-        logger.info("用户中断输入，默认不保存断点续传信息")
-        return False
-
-
 def service_mode(config: Dict) -> None:
     """以服务模式运行"""
     global _shutdown_requested
@@ -219,20 +205,57 @@ def service_mode(config: Dict) -> None:
 
 
 def run_once(config: Dict) -> int:
-    """只运行一次"""
+    """只运行一次，不保存断点信息
+
+    如果指定了 --stdout，将处理后的事件逐行输出到标准输出，不发送到 Logstash。
+    """
     logger.info("运行一次模式")
 
     try:
-        should_save_resume = ask_user_to_save_resume()
+        output_stdout = config.get("output_stdout", False)
 
-        if process_logs(config, should_save_resume):
-            logger.info("单次运行完成")
-            return 0
+        if output_stdout:
+            # stdout 模式：拉取 → 处理 → 输出到 stdout
+            return _run_once_stdout(config)
         else:
-            logger.error("单次运行失败")
-            return 1
+            if process_logs(config, should_save_resume=False):
+                logger.info("单次运行完成")
+                return 0
+            else:
+                logger.error("单次运行失败")
+                return 1
     except Exception as e:
         logger.error(f"单次运行异常: {e}")
+        logger.exception(e)
+        return 1
+
+
+def _run_once_stdout(config: Dict) -> int:
+    """单次运行，将事件输出到标准输出"""
+    try:
+        _apply_resume_fallback(config)
+
+        # 拉取
+        result = fetch_siem_events(config)
+        logs = result.get("data", [])
+
+        if not logs:
+            logger.info("没有获取到日志")
+            return 0
+
+        # 处理
+        processed_logs = process_event_data(logs, config)
+
+        # 输出到 stdout（每条一行 JSON）
+        for log in processed_logs:
+            sys.stdout.write(json.dumps(log) + "\n")
+        sys.stdout.flush()
+
+        logger.info(f"已输出 {len(processed_logs)} 条事件到标准输出")
+        return 0
+
+    except Exception as e:
+        logger.error(f"stdout模式运行失败: {e}")
         logger.exception(e)
         return 1
 
@@ -248,7 +271,11 @@ def main():
         config = get_config()
 
         # 设置日志
-        setup_logging(config.get("log_level", "info"), config.get("log_file", None))
+        output_stdout = config.get("output_stdout", False)
+        setup_logging(
+            config.get("log_level", "info"),
+            stderr=output_stdout  # stdout 模式下日志输出到 stderr，避免与数据混淆
+        )
 
         logger.info("Akamai SIEM日志拉取和发送到Logstash的程序启动")
         logger.debug(f"配置: {json.dumps(config, default=str)}")

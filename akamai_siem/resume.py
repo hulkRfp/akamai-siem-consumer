@@ -40,6 +40,10 @@ def _get_redis_client(config: Dict) -> redis.Redis:
         password = redis_config.get("password", None)
         socket_timeout = redis_config.get("socket_timeout", 5)
 
+        # 空字符串视为无密码
+        if not password:
+            password = None
+
         client = redis.Redis(
             host=host,
             port=port,
