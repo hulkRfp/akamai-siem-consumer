@@ -44,26 +44,35 @@ def _apply_resume_fallback(config: Dict) -> None:
     """加载断点续传信息并应用到配置中
 
     如果断点不存在且未显式指定范围参数，自动切换为 time-based 模式。
+    断点里有什么键就用什么键（offset 更精确，优先）；与配置 mode 不一致时以断点为准。
     """
     resume_data = load_resume_point(config)
 
+    # 显式指定了任一范围参数时完全信任显式值：既不注入断点键，也不触发
+    # fallback，避免 offset / from_time 两套模式的参数互相混入
+    if "offset" in config or "from_time" in config or "to_time" in config:
+        return
+
     if resume_data:
-        if config["mode"] == "offset":
-            if "offset" in resume_data and "offset" not in config:
-                config["offset"] = resume_data["offset"]
-        else:
-            if "from_time" in resume_data and "from_time" not in config:
-                config["from_time"] = resume_data["from_time"]
+        if resume_data.get("offset"):
+            if config["mode"] != "offset":
+                logger.warning(f"断点为offset模式，覆盖配置的拉取模式({config['mode']})")
+                config["mode"] = "offset"
+            config["offset"] = str(resume_data["offset"])
+        elif resume_data.get("from_time"):
+            if config["mode"] != "time-based":
+                logger.warning(f"断点为time-based模式，覆盖配置的拉取模式({config['mode']})")
+                config["mode"] = "time-based"
+            config["from_time"] = resume_data["from_time"]
     else:
-        if "offset" not in config and "from_time" not in config:
-            fallback_minutes = config.get("resume", {}).get("fallback_minutes", 30)
-            from_time = datetime.now(timezone.utc) - timedelta(minutes=fallback_minutes)
-            config["mode"] = "time-based"
-            config["from_time"] = from_time.timestamp()
-            logger.info(
-                f"断点信息不存在，自动切换为time-based模式，"
-                f"从 {fallback_minutes} 分钟前开始拉取 (from_time={config['from_time']})"
-            )
+        fallback_minutes = config.get("resume", {}).get("fallback_minutes", 30)
+        from_time = datetime.now(timezone.utc) - timedelta(minutes=fallback_minutes)
+        config["mode"] = "time-based"
+        config["from_time"] = from_time.timestamp()
+        logger.info(
+            f"断点信息不存在，自动切换为time-based模式，"
+            f"从 {fallback_minutes} 分钟前开始拉取 (from_time={config['from_time']})"
+        )
 
 
 def process_logs(config: Dict, should_save_resume: bool = True) -> bool:
@@ -77,6 +86,18 @@ def process_logs(config: Dict, should_save_resume: bool = True) -> bool:
         metadata = result.get("metadata", {})
 
         if not logs:
+            # 空批次也可能携带新的偏移量上下文：不推进的话，旧 offset 之后
+            # 的数据一旦被服务端淘汰，程序会永久停滞在空结果上。
+            # time-based 同理推进到本轮 to，避免每轮重复扫描越来越宽的窗口。
+            if should_save_resume:
+                new_resume_data = {}
+                if config["mode"] == "offset":
+                    if metadata.get("offset"):
+                        new_resume_data["offset"] = metadata["offset"]
+                elif config.get("next_time"):
+                    new_resume_data["from_time"] = config["next_time"]
+                if new_resume_data:
+                    save_resume_point(config, new_resume_data)
             logger.info("没有获取到日志")
             return True
 
@@ -177,6 +198,8 @@ def service_mode(config: Dict) -> None:
 
             if process_logs(current_config, should_save_resume=True):
                 consecutive_failures = 0
+                # 成功一轮后才交棒给断点续传；失败时保留命令行范围参数原地重试
+                is_first_execution = False
             else:
                 consecutive_failures += 1
                 logger.warning(f"连续失败 {consecutive_failures} 次")
@@ -184,8 +207,6 @@ def service_mode(config: Dict) -> None:
                 if consecutive_failures >= max_consecutive_failures:
                     logger.error(f"达到最大连续失败次数 {max_consecutive_failures}，退出服务")
                     sys.exit(1)
-
-            is_first_execution = False
 
             # 使用短间隔循环检查退出标志，而非一次性 sleep
             logger.info(f"等待 {interval} 秒后再次拉取")

@@ -10,7 +10,7 @@ import argparse
 import copy
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict
 
 import yaml
@@ -116,10 +116,17 @@ def _validate_time_param(config: Dict, param_name: str) -> None:
             pass
 
         try:
-            config[param_name] = datetime.fromisoformat(value).timestamp()
-            return
+            parsed_dt = datetime.fromisoformat(value)
         except ValueError:
             raise ValueError(f"无效的时间格式 ({param_name}): {value}")
+
+        # 无时区的字符串按 UTC 解释，避免随运行机器本地时区漂移
+        if parsed_dt.tzinfo is None:
+            logger.warning(f"{param_name} 未带时区，按 UTC 解释: {value}")
+            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+
+        config[param_name] = parsed_dt.timestamp()
+        return
 
     raise ValueError(f"{param_name} 类型无效: {type(value)}")
 

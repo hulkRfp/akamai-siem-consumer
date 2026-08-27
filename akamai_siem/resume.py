@@ -1,7 +1,8 @@
 """
 断点续传模块 - 使用 Redis 存储
 
-当 Redis 中不存在断点信息时，返回空字典，由调用方决定回退策略。
+当 Redis 中不存在断点信息时，返回空字典，由调用方决定回退策略；
+Redis 连接失败时直接向上抛出异常（快速失败），禁止在未知断点状态下盲拉数据。
 """
 
 # 尝试导入ujson，如果不可用则回退到标准json库
@@ -80,25 +81,27 @@ def load_resume_point(config: Dict) -> Dict:
         logger.info("断点续传功能已禁用")
         return {}
 
+    # 连接失败直接抛异常（由上层 process_logs 计入连续失败并最终退出）：
+    # 拿不到断点就不该开始拉取，否则 Redis 故障期间每轮都会从
+    # fallback 窗口重发一遍。宁可计数失败退出交给重启策略，不可盲拉。
+    client = _get_redis_client(config)
+    key = _get_redis_key(config)
+
+    data = client.get(key)
+    if not data:
+        logger.info(f"Redis中未找到断点续传信息: key={key}")
+        return {}
+
     try:
-        client = _get_redis_client(config)
-        key = _get_redis_key(config)
-
-        data = client.get(key)
-        if data:
-            resume_data = json.loads(data)
-            logger.info(f"从Redis加载断点续传信息成功: key={key}, data={resume_data}")
-            return resume_data
-        else:
-            logger.info(f"Redis中未找到断点续传信息: key={key}")
-            return {}
-
-    except redis.ConnectionError as e:
-        logger.error(f"Redis连接失败，无法加载断点续传信息: {e}")
+        resume_data = json.loads(data)
+    except ValueError as e:
+        # 断点内容损坏无法恢复：丢弃后走正常 bootstrap 流程重建，
+        # 损失范围为一次 fallback 窗口的重复发送，可接受
+        logger.error(f"断点数据损坏，已忽略并重新建立断点: key={key}, error={e}")
         return {}
-    except Exception as e:
-        logger.error(f"加载断点续传信息失败: {e}")
-        return {}
+
+    logger.info(f"从Redis加载断点续传信息成功: key={key}, data={resume_data}")
+    return resume_data
 
 
 def save_resume_point(config: Dict, resume_data: Dict) -> None:

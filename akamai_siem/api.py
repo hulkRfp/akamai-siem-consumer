@@ -33,7 +33,8 @@ def _get_session(akamai_config: Dict) -> requests.Session:
     config_hash = (
         f"{akamai_config.get('base_url')}:"
         f"{akamai_config.get('client_token')}:"
-        f"{akamai_config.get('access_token')}"
+        f"{akamai_config.get('access_token')}:"
+        f"{akamai_config.get('client_secret')}"
     )
 
     if _session is not None and _session_config_hash == config_hash:
@@ -70,11 +71,8 @@ def fetch_siem_events(config: Dict) -> Dict:
     base_url = base_url.rstrip('/')
     endpoint = f"{base_url}/siem/v1/configs/{akamai_config.get('configId')}"
 
-    # 构建查询参数
-    if config["run_mode"] == "service" and config["mode"] == "time-based":
-        params = {}
-    else:
-        params = {"limit": config.get("limit")}
+    # 构建查询参数：统一携带 limit，保证单次响应体积可控、解析内存有上界
+    params = {"limit": config.get("limit")}
 
     if config["mode"] == "offset":
         params["offset"] = config.get("offset")

@@ -174,8 +174,9 @@ def _process_single_log(log: Dict, ctx: _ProcessingContext) -> Optional[Dict]:
 
         return log
     except Exception as e:
-        logger.error(f"处理单条日志失败: {e}")
-        return None
+        # 转换失败不丢事件：半处理后的事件仍是合法 JSON，好过整条消失
+        logger.error(f"处理单条日志失败，保留事件继续发送: {e}", exc_info=True)
+        return log
 
 
 def _get_by_parts(obj: Dict, parts: Tuple[str, ...]) -> Any:
@@ -249,13 +250,17 @@ def _decode_attack_data(log: Dict, decode_cfg: _AttackDecodeConfig) -> None:
             if not rules_array:
                 rules_array = [{} for _ in range(len(member_array))]
 
+            # 后续成员可能比第一个更长，扩容避免索引越界
+            while len(rules_array) < len(member_array):
+                rules_array.append({})
+
             # Base64解码
             for i, item in enumerate(member_array):
                 if not item:
                     continue
 
                 try:
-                    decoded_bytes = base64.b64decode(item)
+                    decoded_bytes = base64.b64decode(item, validate=True)
                     try:
                         decoded_item = decoded_bytes.decode('utf-8')
                     except UnicodeDecodeError:
