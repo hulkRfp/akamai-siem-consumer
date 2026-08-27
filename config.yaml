@@ -15,7 +15,12 @@ logstash:
   host: "127.0.0.1"
   port: 5045
   protocol: tcp
-  timeout: 10
+  # 单条 send 的超时（秒）。超过即判定整批发送失败，
+  # 由上层 resume 机制从 offset 重新拉取重发（宁可重复不可错位）。
+  timeout: 30
+  # 每批发送的最大字节数（默认 5MB，约对应 500~1000 条事件）。
+  # 控制单次 send 体积，避免大批次触发超时。单条超过此值也会单独成批。
+  max_batch_bytes: 5242880
 
 resume:
   enabled: true
