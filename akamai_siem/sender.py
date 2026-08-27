@@ -142,7 +142,6 @@ def _send_tcp_batched(host: str, port: int, timeout: int, logs: List[Dict], max_
     并重发整批（宁可重复，不可错位）。重复记录可用 requestId 去重或容忍，
     错位的半条记录无法自愈。
     """
-    max_batch_bytes = MAX_BATCH_BYTES
     batches = _split_into_byte_batches(logs, max_batch_bytes)
 
     conn = _get_tcp_connection(host, port, timeout)
